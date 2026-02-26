@@ -4,13 +4,13 @@ RUN corepack enable && corepack prepare pnpm@10.11.0 --activate
 FROM base AS deps
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN pnpm build
+RUN pnpm run postinstall && pnpm build
 
 FROM base AS runner
 WORKDIR /app
