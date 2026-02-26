@@ -8,8 +8,8 @@ export function Header() {
           <span className="text-lg">📦</span>
           <span>Pacotinho Blog</span>
         </Link>
-        <div className="flex items-center gap-6 text-sm">
-          <Link href="/blog" className="text-fd-muted-foreground hover:text-fd-foreground transition-colors">
+        <div className="flex items-center gap-4 sm:gap-6 text-sm">
+          <Link href="/blog" className="hidden sm:inline text-fd-muted-foreground hover:text-fd-foreground transition-colors">
             Posts
           </Link>
           <Link href="/feed.xml" className="text-fd-muted-foreground hover:text-fd-foreground transition-colors">
@@ -21,7 +21,8 @@ export function Header() {
             target="_blank"
             rel="noopener noreferrer"
           >
-            Acessar o App &rarr;
+            <span className="hidden sm:inline">Acessar o App &rarr;</span>
+            <span className="sm:hidden">App &rarr;</span>
           </a>
         </div>
       </nav>

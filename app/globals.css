@@ -4,3 +4,19 @@
 @import "fumadocs-ui/css/preset.css";
 
 @custom-variant dark (&:where(.dark, .dark *));
+
+/* Mobile: prevent horizontal overflow from code blocks and wide content */
+.prose pre {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.prose img {
+  border-radius: 0.5rem;
+}
+
+.prose :where(table) {
+  display: block;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}

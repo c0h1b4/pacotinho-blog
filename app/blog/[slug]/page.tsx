@@ -45,7 +45,7 @@ export default async function BlogPostPage({ params }: Props) {
   const postUrl = `${SITE_URL}/blog/${slug}`;
 
   return (
-    <main className="container mx-auto px-4 py-12">
+    <main className="container mx-auto px-4 py-6 sm:py-12">
       <div className="mx-auto max-w-3xl">
         <BlogPost post={post} />
         <div className="mt-8 pt-6 border-t border-fd-border">

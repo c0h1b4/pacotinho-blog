@@ -113,25 +113,27 @@ export function BlogListClient({
             : "Nenhum post publicado ainda."}
         </p>
       ) : (
-        <div className="grid gap-6">
+        <div className="grid gap-4 sm:gap-6">
           {paginated.map((post) => (
             <Link
               key={post.slug}
               href={`/blog/${post.slug}`}
-              className="block rounded-lg border border-fd-border bg-fd-card p-6 transition-colors hover:bg-fd-accent"
+              className="block rounded-lg border border-fd-border bg-fd-card p-4 sm:p-6 transition-colors hover:bg-fd-accent"
             >
-              <h2 className="text-xl font-semibold text-fd-foreground mb-2">
+              <h2 className="text-lg sm:text-xl font-semibold text-fd-foreground mb-1.5 sm:mb-2">
                 {post.title}
               </h2>
-              <p className="text-fd-muted-foreground text-sm mb-3">
+              <p className="text-fd-muted-foreground text-sm mb-3 line-clamp-2">
                 {post.excerpt}
               </p>
-              <div className="flex items-center gap-4 text-xs text-fd-muted-foreground">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fd-muted-foreground">
                 <span>{formatDateBR(post.date)}</span>
-                <span>{post.readingTime} min de leitura</span>
+                <span className="hidden sm:inline">&middot;</span>
+                <span>{post.readingTime} min</span>
+                <span className="hidden sm:inline">&middot;</span>
                 <span>por {post.author}</span>
                 {post.tags.length > 0 && (
-                  <div className="flex gap-1.5">
+                  <div className="flex gap-1.5 basis-full sm:basis-auto mt-1.5 sm:mt-0">
                     {post.tags.map((tag) => (
                       <span
                         key={tag}
