@@ -1,8 +1,9 @@
-import { getBlogPostSummaries } from "@/lib/source";
-import { BlogList } from "@/components/BlogList";
+import { getBlogPostSummaries, getAllTags } from "@/lib/source";
+import { BlogListClient } from "@/components/BlogListClient";
 
 export default function BlogPage() {
   const posts = getBlogPostSummaries();
+  const allTags = getAllTags();
 
   return (
     <main className="container mx-auto max-w-3xl px-4 py-12">
@@ -10,7 +11,7 @@ export default function BlogPage() {
       <p className="text-fd-muted-foreground mb-8">
         Dicas, novidades e conteúdos sobre gestão de encomendas em condomínios.
       </p>
-      <BlogList posts={posts} />
+      <BlogListClient posts={posts} allTags={allTags} />
     </main>
   );
 }

@@ -11,7 +11,7 @@ export function BlogPost({ post }: { post: BlogPostType }) {
   const Content = post.content;
 
   return (
-    <article className="mx-auto max-w-3xl">
+    <article>
       <Link
         href="/blog"
         className="text-fd-muted-foreground text-sm hover:text-fd-foreground mb-8 inline-block"
@@ -25,6 +25,7 @@ export function BlogPost({ post }: { post: BlogPostType }) {
         </h1>
         <div className="flex items-center gap-4 text-sm text-fd-muted-foreground">
           <span>{formatDateBR(post.date)}</span>
+          <span>{post.readingTime} min de leitura</span>
           <span>por {post.author}</span>
         </div>
         {post.tags.length > 0 && (

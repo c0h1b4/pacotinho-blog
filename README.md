@@ -71,4 +71,3 @@ pnpm install
 pnpm dev
 # Acesse http://localhost:3002/blog
 ```
-
