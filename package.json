@@ -6,7 +6,8 @@
     "dev": "next dev -p 3002",
     "build": "next build",
     "start": "next start -p 3002",
-    "postinstall": "fumadocs-mdx"
+    "postinstall": "fumadocs-mdx",
+    "test:release": "bash tests/immutable-release.sh"
   },
   "dependencies": {
     "fumadocs-core": "^16.6.3",

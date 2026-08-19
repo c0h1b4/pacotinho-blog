@@ -1,0 +1,1053 @@
+name: Build immutable AMD64 image
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character commit reviewed and merged into main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: pacotinho-blog-immutable-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: >-
+      github.repository == 'c0h1b4/pacotinho-blog' &&
+      github.actor == 'c0h1b4' &&
+      github.triggering_actor == 'c0h1b4' &&
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, Linux, X64, pacotinho-blog-builder]
+    timeout-minutes: 90
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      IMAGE_REPOSITORY: ghcr.io/c0h1b4/pacotinho-blog
+      BUILDKIT_IMAGE: moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+      SBOM_GENERATOR: docker/buildkit-syft-scanner@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68
+      DOCKERFILE_FRONTEND: docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+      NODE_IMAGE: node:24.13.0-bookworm-slim@sha256:46feb5752989c05b8606e6323fbbc3db667d14ade1c24f5d0d44d9ca9909d607
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.hooksPath
+      GIT_CONFIG_VALUE_0: /dev/null
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_NOSYSTEM: '1'
+      GIT_NO_REPLACE_OBJECTS: '1'
+    steps:
+      - name: Reset persistent runner workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          readonly expected_workspace=/opt/actions-blog-runner/_work/pacotinho-blog/pacotinho-blog
+          readonly workspace_parent=${expected_workspace%/*}
+          [[ "${GITHUB_WORKSPACE}" == "${expected_workspace}" ]]
+          [[ "$(/usr/bin/realpath -e -- "${GITHUB_WORKSPACE}")" == "${expected_workspace}" ]]
+          [[ "$(/usr/bin/realpath -e -- "${workspace_parent}")" == "${workspace_parent}" ]]
+          /usr/bin/find "${GITHUB_WORKSPACE}" -xdev -mindepth 1 -delete
+
+      - name: Check out trusted main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          clean: true
+          set-safe-directory: false
+
+      - name: Validate native runner and exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GIT_NO_REPLACE_OBJECTS=1
+
+          [[ "${RUNNER_ARCH}" == X64 ]]
+          [[ "$(uname -m)" == x86_64 ]]
+          docker_host_platform=$(docker info --format '{{.OSType}}/{{.Architecture}}')
+          [[ "${docker_host_platform}" == linux/x86_64 || "${docker_host_platform}" == linux/amd64 ]]
+
+          [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${GITHUB_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${GITHUB_WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "${GITHUB_WORKFLOW_SHA}^{commit}"
+          git merge-base --is-ancestor "${GITHUB_WORKFLOW_SHA}" "${GITHUB_SHA}"
+          [[ "${SOURCE_SHA}" == "${GITHUB_SHA}" ]]
+          [[ -z "$(git replace -l)" ]]
+          [[ ! -s "$(git rev-parse --git-path info/grafts)" ]]
+
+          trusted_main=$(git rev-parse HEAD)
+          [[ "${trusted_main}" == "${GITHUB_SHA}" ]]
+          git cat-file -e "${SOURCE_SHA}^{commit}"
+          git checkout --detach "${SOURCE_SHA}"
+          [[ "$(git rev-parse HEAD)" == "${SOURCE_SHA}" ]]
+          [[ -z "$(git status --porcelain)" ]]
+
+          tree_sha=$(git show -s --format=%T "${SOURCE_SHA}")
+          source_date_epoch=$(git show -s --format=%ct "${SOURCE_SHA}")
+          source_committed_at=$(date -u --date="@${source_date_epoch}" +'%Y-%m-%dT%H:%M:%SZ')
+          image_created=${source_committed_at}
+          build_identity="sha256:$(printf 'repository=%s\ncommit=%s\ntree=%s\nplatform=linux/amd64\n' \
+            "${GITHUB_REPOSITORY}" "${SOURCE_SHA}" "${tree_sha}" | sha256sum | cut -d' ' -f1)"
+          [[ "${tree_sha}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${source_date_epoch}" =~ ^[0-9]+$ ]]
+          [[ "${source_committed_at}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+          [[ "${image_created}" == "${source_committed_at}" ]]
+          [[ "${build_identity}" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+          IFS= read -r dockerfile_frontend <Dockerfile
+          [[ "${dockerfile_frontend}" == "# syntax=${DOCKERFILE_FRONTEND}" ]]
+          grep -Fqx "FROM ${NODE_IMAGE} AS base" Dockerfile
+          grep -Fqx "FROM ${NODE_IMAGE} AS runner" Dockerfile
+
+          dockerfile_sha256=$(sha256sum Dockerfile | cut -d' ' -f1)
+          lockfile_sha256=$(sha256sum pnpm-lock.yaml | cut -d' ' -f1)
+          [[ "${dockerfile_sha256}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${lockfile_sha256}" =~ ^[0-9a-f]{64}$ ]]
+          {
+            printf 'TRUSTED_MAIN_SHA=%s\n' "${trusted_main}"
+            printf 'TREE_SHA=%s\n' "${tree_sha}"
+            printf 'SOURCE_COMMITTED_AT=%s\n' "${source_committed_at}"
+            printf 'SOURCE_DATE_EPOCH=%s\n' "${source_date_epoch}"
+            printf 'IMAGE_CREATED=%s\n' "${image_created}"
+            printf 'BUILD_IDENTITY=%s\n' "${build_identity}"
+            printf 'DOCKERFILE_SHA256=sha256:%s\n' "${dockerfile_sha256}"
+            printf 'LOCKFILE_SHA256=sha256:%s\n' "${lockfile_sha256}"
+          } >>"${GITHUB_ENV}"
+
+      - name: Set up exact validation Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.13.0
+
+      - name: Revalidate exact reviewed source before publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          actionlint_dir=$(mktemp -d "${RUNNER_TEMP}/pacotinho-blog-actionlint.XXXXXX")
+          cleanup_validation() {
+            status=$?
+            trap - EXIT
+            rm -rf -- "${actionlint_dir}"
+            exit "${status}"
+          }
+          trap cleanup_validation EXIT
+
+          actionlint_archive=${actionlint_dir}/actionlint.tar.gz
+          /usr/bin/curl --disable \
+            --proto '=https' \
+            --proto-redir '=https' \
+            --tlsv1.2 \
+            --connect-timeout 10 \
+            --max-time 120 \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --max-redirs 5 \
+            --output "${actionlint_archive}" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          printf '%s  %s\n' \
+            8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 \
+            "${actionlint_archive}" \
+            | sha256sum --check --strict
+          tar --extract --gzip \
+            --file "${actionlint_archive}" \
+            --directory "${actionlint_dir}" \
+            actionlint
+          chmod 0755 "${actionlint_dir}/actionlint"
+          command -v shellcheck >/dev/null
+
+          "${actionlint_dir}/actionlint" -color
+          bash tests/immutable-release.sh
+          corepack enable
+          corepack prepare pnpm@10.11.0 --activate
+          pnpm install --frozen-lockfile
+          PACOTINHO_SOURCE_REVISION="${SOURCE_SHA}" pnpm build
+
+          VALIDATION_SOURCE_SHA="${SOURCE_SHA}" \
+          VALIDATION_TREE_SHA="${TREE_SHA}" \
+          VALIDATION_IMAGE_CREATED="${IMAGE_CREATED}" \
+          VALIDATION_SOURCE_COMMITTED_AT="${SOURCE_COMMITTED_AT}" \
+          VALIDATION_SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" \
+          VALIDATION_BUILD_ID="${BUILD_IDENTITY}" \
+          VALIDATION_IMAGE_REPOSITORY="pacotinho-blog-release-gate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            bash tests/validate-image.sh
+
+      - name: Build, attest, push by digest, and verify
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          docker_config=$(mktemp -d)
+          builder_name="pacotinho-blog-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          builder_created=false
+          image=
+          smoke_container=
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if [[ "${builder_created}" == true ]]; then
+              if ! docker buildx rm "${builder_name}" >/dev/null 2>&1; then
+                printf 'buildx_cleanup_failed=true\n' >&2
+                status=1
+              fi
+            fi
+            if [[ -n "${smoke_container}" ]]; then
+              docker rm --force "${smoke_container}" >/dev/null 2>&1 || true
+            fi
+            [[ -z "${image}" ]] || docker image rm "${image}" >/dev/null 2>&1 || true
+            unset GHCR_TOKEN DOCKER_CONFIG
+            rm -rf -- "${docker_config}"
+            exit "${status}"
+          }
+          trap cleanup EXIT
+          export DOCKER_CONFIG=${docker_config}
+
+          printf '%s\n' "${GHCR_TOKEN}" \
+            | docker login ghcr.io --username c0h1b4 --password-stdin >/dev/null
+          unset GHCR_TOKEN
+
+          buildx_version=$(docker buildx version)
+          [[ "${buildx_version}" == *' v0.36.1 '* ]]
+          docker_version=$(docker version --format '{{.Client.Version}}/{{.Server.Version}}')
+
+          builder_created=true
+          docker buildx create \
+            --driver docker-container \
+            --driver-opt "image=${BUILDKIT_IMAGE}" \
+            --name "${builder_name}" \
+            --use
+          buildkit_inspect=$(docker buildx inspect --bootstrap)
+          buildkit_version=$(printf '%s\n' "${buildkit_inspect}" \
+            | /usr/bin/python3 -I -c 'import sys; print(next((line.split(":", 1)[1].strip() for line in sys.stdin if line.strip().startswith("BuildKit version:")), ""))')
+          [[ -n "${buildkit_version}" ]]
+
+          build_context_sha256=$(
+            /usr/bin/python3 -I - \
+              --source-sha "${SOURCE_SHA}" \
+              --tree-sha "${TREE_SHA}" \
+              --source-committed-at "${SOURCE_COMMITTED_AT}" \
+              --source-date-epoch "${SOURCE_DATE_EPOCH}" \
+              --build-identity "${BUILD_IDENTITY}" \
+              --dockerfile-sha256 "${DOCKERFILE_SHA256}" \
+              --lockfile-sha256 "${LOCKFILE_SHA256}" \
+              --image-repository "${IMAGE_REPOSITORY}" \
+              --sbom-generator "${SBOM_GENERATOR}" \
+              -- \
+              docker buildx build \
+              --platform linux/amd64 \
+              --file Dockerfile \
+              --build-arg "OCI_REVISION=${SOURCE_SHA}" \
+              --build-arg "OCI_VERSION=${SOURCE_SHA}" \
+              --build-arg "OCI_CREATED=${IMAGE_CREATED}" \
+              --build-arg "OCI_SOURCE_COMMITTED_AT=${SOURCE_COMMITTED_AT}" \
+              --build-arg "OCI_TREE=${TREE_SHA}" \
+              --build-arg "OCI_BUILD_ID=${BUILD_IDENTITY}" \
+              --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" \
+              --provenance=mode=max,version=v1 \
+              --attest "type=sbom,generator=${SBOM_GENERATOR}" \
+              --metadata-file build-metadata.json \
+              --output "type=image,name=${IMAGE_REPOSITORY},push-by-digest=true,name-canonical=true,push=true" \
+              - <<'PY'
+          import argparse
+          import fcntl
+          import hashlib
+          import os
+          import re
+          import stat
+          import subprocess
+          import sys
+          import tarfile
+          from pathlib import PurePosixPath
+
+          DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
+          SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
+          TIMESTAMP_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+
+
+          def digest_fd(fd):
+              os.lseek(fd, 0, os.SEEK_SET)
+              digest = hashlib.sha256()
+              while chunk := os.read(fd, 1024 * 1024):
+                  digest.update(chunk)
+              return "sha256:" + digest.hexdigest()
+
+
+          def git_object_id(kind, payload):
+              header = f"{kind} {len(payload)}\0".encode()
+              return hashlib.sha1(
+                  header + payload,
+                  usedforsecurity=False,
+              ).hexdigest()
+
+
+          def insert_tree_entry(root, parts, mode, object_id):
+              node = root
+              for component in parts[:-1]:
+                  existing = node.setdefault(component, {})
+                  if not isinstance(existing, dict):
+                      raise SystemExit("immutable source path conflicts with a file")
+                  node = existing
+              name = parts[-1]
+              if name in node:
+                  raise SystemExit("duplicate immutable source tree entry")
+              node[name] = (mode, object_id)
+
+
+          def git_tree_id(node):
+              entries = []
+              for name, value in node.items():
+                  if isinstance(value, dict):
+                      mode = "40000"
+                      object_id = git_tree_id(value)
+                  else:
+                      mode, object_id = value
+                  name_bytes = name.encode("utf-8", "surrogateescape")
+                  sort_suffix = b"/" if mode == "40000" else b"\0"
+                  entries.append((name_bytes + sort_suffix, mode, name_bytes, object_id))
+              entries.sort(key=lambda entry: entry[0])
+              payload = b"".join(
+                  mode.encode() + b" " + name + b"\0" + bytes.fromhex(object_id)
+                  for _, mode, name, object_id in entries
+              )
+              return git_object_id("tree", payload)
+
+
+          def require_option(command, name, expected):
+              positions = [index for index, value in enumerate(command) if value == name]
+              if len(positions) != 1:
+                  raise SystemExit(f"sealed-context option missing or duplicated: {name}")
+              position = positions[0]
+              if command[position + 1:position + 2] != [expected]:
+                  raise SystemExit(f"sealed-context option mismatch: {name}")
+
+
+          def require_flag(command, name):
+              if command.count(name) != 1:
+                  raise SystemExit(f"sealed-context flag missing or duplicated: {name}")
+
+
+          parser = argparse.ArgumentParser()
+          parser.add_argument("--source-sha", required=True)
+          parser.add_argument("--tree-sha", required=True)
+          parser.add_argument("--source-committed-at", required=True)
+          parser.add_argument("--source-date-epoch", required=True)
+          parser.add_argument("--build-identity", required=True)
+          parser.add_argument("--dockerfile-sha256", required=True)
+          parser.add_argument("--lockfile-sha256", required=True)
+          parser.add_argument("--image-repository", required=True)
+          parser.add_argument("--sbom-generator", required=True)
+          parser.add_argument("command", nargs=argparse.REMAINDER)
+          arguments = parser.parse_args()
+          command = arguments.command
+          if command[:1] == ["--"]:
+              command = command[1:]
+          if (
+              command[:3] != ["docker", "buildx", "build"]
+              or command[-1:] != ["-"]
+              or command.count("-") != 1
+              or "." in command
+          ):
+              raise SystemExit("invalid sealed-context build command")
+          if not SHA_PATTERN.fullmatch(arguments.source_sha):
+              raise SystemExit("invalid sealed-context source SHA")
+          if not SHA_PATTERN.fullmatch(arguments.tree_sha):
+              raise SystemExit("invalid sealed-context tree SHA")
+          if not TIMESTAMP_PATTERN.fullmatch(arguments.source_committed_at):
+              raise SystemExit("invalid sealed-context source timestamp")
+          if not arguments.source_date_epoch.isdigit():
+              raise SystemExit("invalid sealed-context source epoch")
+          if not DIGEST_PATTERN.fullmatch(arguments.build_identity):
+              raise SystemExit("invalid sealed-context build identity")
+          for value, label in (
+              (arguments.dockerfile_sha256, "Dockerfile"),
+              (arguments.lockfile_sha256, "lockfile"),
+          ):
+              if not DIGEST_PATTERN.fullmatch(value) or value == "sha256:" + ("0" * 64):
+                  raise SystemExit(f"invalid sealed-context {label} digest")
+          if arguments.image_repository != "ghcr.io/c0h1b4/pacotinho-blog":
+              raise SystemExit("invalid sealed-context image repository")
+          if arguments.sbom_generator != "docker/buildkit-syft-scanner@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68":
+              raise SystemExit("invalid sealed-context SBOM generator")
+
+          require_option(command, "--platform", "linux/amd64")
+          require_option(command, "--file", "Dockerfile")
+          require_flag(command, "--provenance=mode=max,version=v1")
+          require_option(
+              command,
+              "--attest",
+              f"type=sbom,generator={arguments.sbom_generator}",
+          )
+          require_option(command, "--metadata-file", "build-metadata.json")
+          require_option(
+              command,
+              "--output",
+              f"type=image,name={arguments.image_repository},push-by-digest=true,name-canonical=true,push=true",
+          )
+          build_args = {}
+          for index, value in enumerate(command):
+              if value != "--build-arg":
+                  continue
+              if index + 1 >= len(command):
+                  raise SystemExit("sealed-context build argument value missing")
+              name, separator, build_value = command[index + 1].partition("=")
+              if not separator or not name or name in build_args:
+                  raise SystemExit("sealed-context build argument invalid or duplicated")
+              build_args[name] = build_value
+          expected_build_args = {
+              "OCI_REVISION": arguments.source_sha,
+              "OCI_VERSION": arguments.source_sha,
+              "OCI_CREATED": arguments.source_committed_at,
+              "OCI_SOURCE_COMMITTED_AT": arguments.source_committed_at,
+              "OCI_TREE": arguments.tree_sha,
+              "OCI_BUILD_ID": arguments.build_identity,
+              "SOURCE_DATE_EPOCH": arguments.source_date_epoch,
+          }
+          if build_args != expected_build_args:
+              raise SystemExit("sealed-context build arguments do not match reviewed identity")
+          expected_command = [
+              "docker",
+              "buildx",
+              "build",
+              "--platform",
+              "linux/amd64",
+              "--file",
+              "Dockerfile",
+              "--build-arg",
+              f"OCI_REVISION={arguments.source_sha}",
+              "--build-arg",
+              f"OCI_VERSION={arguments.source_sha}",
+              "--build-arg",
+              f"OCI_CREATED={arguments.source_committed_at}",
+              "--build-arg",
+              f"OCI_SOURCE_COMMITTED_AT={arguments.source_committed_at}",
+              "--build-arg",
+              f"OCI_TREE={arguments.tree_sha}",
+              "--build-arg",
+              f"OCI_BUILD_ID={arguments.build_identity}",
+              "--build-arg",
+              f"SOURCE_DATE_EPOCH={arguments.source_date_epoch}",
+              "--provenance=mode=max,version=v1",
+              "--attest",
+              f"type=sbom,generator={arguments.sbom_generator}",
+              "--metadata-file",
+              "build-metadata.json",
+              "--output",
+              f"type=image,name={arguments.image_repository},push-by-digest=true,name-canonical=true,push=true",
+              "-",
+          ]
+          if command != expected_command:
+              raise SystemExit("sealed-context build command differs from reviewed command")
+
+          actual_tree = subprocess.run(
+              ["/usr/bin/git", "show", "-s", "--format=%T", arguments.source_sha],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout.strip()
+          if actual_tree != arguments.tree_sha:
+              raise SystemExit("sealed-context source tree mismatch")
+
+          context_fd = os.memfd_create(
+              "pacotinho-blog-immutable-source",
+              os.MFD_ALLOW_SEALING | os.MFD_CLOEXEC,
+          )
+          try:
+              subprocess.run(
+                  [
+                      "/usr/bin/git",
+                      "-c",
+                      "tar.umask=0000",
+                      "archive",
+                      "--format=tar",
+                      arguments.source_sha,
+                  ],
+                  check=True,
+                  stdout=context_fd,
+              )
+              required_seals = (
+                  fcntl.F_SEAL_SEAL
+                  | fcntl.F_SEAL_SHRINK
+                  | fcntl.F_SEAL_GROW
+                  | fcntl.F_SEAL_WRITE
+              )
+              fcntl.fcntl(context_fd, fcntl.F_ADD_SEALS, required_seals)
+              actual_seals = fcntl.fcntl(context_fd, fcntl.F_GET_SEALS)
+              context_stat = os.fstat(context_fd)
+              if actual_seals & required_seals != required_seals:
+                  raise SystemExit("immutable source context was not sealed")
+              if not stat.S_ISREG(context_stat.st_mode) or context_stat.st_nlink != 0:
+                  raise SystemExit("immutable source context is not an anonymous regular file")
+              if context_stat.st_size < 1:
+                  raise SystemExit("immutable source context is empty")
+
+              os.lseek(context_fd, 0, os.SEEK_SET)
+              embedded_commit = subprocess.run(
+                  ["/usr/bin/git", "get-tar-commit-id"],
+                  check=True,
+                  stdin=context_fd,
+                  capture_output=True,
+                  text=True,
+              ).stdout.strip()
+              if embedded_commit != arguments.source_sha:
+                  raise SystemExit("immutable source context commit mismatch")
+              context_digest = digest_fd(context_fd)
+
+              expected_files = {
+                  "Dockerfile": arguments.dockerfile_sha256,
+                  "pnpm-lock.yaml": arguments.lockfile_sha256,
+              }
+              observed_files = {}
+              source_tree = {}
+              seen_paths = set()
+              os.lseek(context_fd, 0, os.SEEK_SET)
+              with os.fdopen(os.dup(context_fd), "rb", closefd=True) as context_stream:
+                  with tarfile.open(fileobj=context_stream, mode="r:") as archive:
+                      for member in archive:
+                          path = PurePosixPath(member.name)
+                          canonical_path = path.as_posix()
+                          archive_path = member.name.rstrip("/")
+                          if (
+                              path.is_absolute()
+                              or not path.parts
+                              or ".." in path.parts
+                              or archive_path != canonical_path
+                              or canonical_path in seen_paths
+                          ):
+                              raise SystemExit("unsafe or duplicate immutable source context path")
+                          seen_paths.add(canonical_path)
+                          if member.isdir():
+                              continue
+                          if member.isfile():
+                              extracted = archive.extractfile(member)
+                              if extracted is None:
+                                  raise SystemExit("immutable source file is unreadable")
+                              payload = extracted.read()
+                              mode = "100755" if member.mode & 0o111 else "100644"
+                          elif member.issym():
+                              payload = member.linkname.encode("utf-8", "surrogateescape")
+                              mode = "120000"
+                          else:
+                              raise SystemExit("unsupported immutable source entry type")
+                          insert_tree_entry(
+                              source_tree,
+                              path.parts,
+                              mode,
+                              git_object_id("blob", payload),
+                          )
+                          if canonical_path in expected_files:
+                              observed_files[canonical_path] = (
+                                  "sha256:" + hashlib.sha256(payload).hexdigest()
+                              )
+              if observed_files != expected_files:
+                  raise SystemExit("immutable source identity file digest mismatch")
+              if git_tree_id(source_tree) != arguments.tree_sha:
+                  raise SystemExit("immutable source archive tree mismatch")
+              if digest_fd(context_fd) != context_digest:
+                  raise SystemExit("sealed source context changed before Buildx use")
+
+              os.lseek(context_fd, 0, os.SEEK_SET)
+              completed = subprocess.run(
+                  command,
+                  stdin=context_fd,
+                  stdout=sys.stderr,
+              )
+              if completed.returncode != 0:
+                  raise SystemExit(completed.returncode)
+              print(context_digest)
+          finally:
+              os.close(context_fd)
+          PY
+          )
+          [[ "${build_context_sha256}" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+          release_index_digest=$(/usr/bin/python3 -I -c 'import json; print(json.load(open("build-metadata.json"))["containerimage.digest"])')
+          [[ "${release_index_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          release_index="${IMAGE_REPOSITORY}@${release_index_digest}"
+          docker buildx imagetools inspect "${release_index}" --raw >image-index.json
+
+          readarray -t index_digests < <(/usr/bin/python3 -I <<'PY'
+          import json
+          import re
+
+          with open("image-index.json", encoding="utf-8") as handle:
+              index = json.load(handle)
+          manifests = index.get("manifests")
+          if index.get("schemaVersion") != 2 or not isinstance(manifests, list):
+              raise SystemExit("invalid image index")
+          platform = [
+              descriptor for descriptor in manifests
+              if descriptor.get("platform", {}).get("os") == "linux"
+              and descriptor.get("platform", {}).get("architecture") == "amd64"
+          ]
+          attestations = [
+              descriptor for descriptor in manifests
+              if descriptor.get("platform", {}).get("os") == "unknown"
+              and descriptor.get("platform", {}).get("architecture") == "unknown"
+          ]
+          if len(manifests) != 2 or len(platform) != 1 or len(attestations) != 1:
+              raise SystemExit("unexpected image index descriptors")
+          digest_pattern = re.compile(r"sha256:[0-9a-f]{64}")
+          subject_digest = platform[0].get("digest", "")
+          attestation = attestations[0]
+          attestation_digest = attestation.get("digest", "")
+          if not digest_pattern.fullmatch(subject_digest) or not digest_pattern.fullmatch(attestation_digest):
+              raise SystemExit("invalid image index digest")
+          annotations = attestation.get("annotations", {})
+          if annotations.get("vnd.docker.reference.type") != "attestation-manifest":
+              raise SystemExit("invalid attestation descriptor type")
+          if annotations.get("vnd.docker.reference.digest") != subject_digest:
+              raise SystemExit("attestation subject mismatch")
+          print(subject_digest)
+          print(attestation_digest)
+          PY
+          )
+          [[ ${#index_digests[@]} -eq 2 ]]
+          image_digest=${index_digests[0]}
+          attestation_digest=${index_digests[1]}
+          [[ "${image_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "${attestation_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "${image_digest}" != "${release_index_digest}" ]]
+          image="${IMAGE_REPOSITORY}@${image_digest}"
+
+          docker pull --platform linux/amd64 "${image}" >/dev/null
+          [[ "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "${image}")" == linux/amd64 ]]
+          [[ "$(docker image inspect --format '{{.Config.User}}' "${image}")" == node ]]
+          [[ "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.source"}}' "${image}")" == 'https://github.com/c0h1b4/pacotinho-blog' ]]
+          [[ "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "${image}")" == "${SOURCE_SHA}" ]]
+          [[ "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "${image}")" == "${SOURCE_SHA}" ]]
+          [[ "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.created"}}' "${image}")" == "${IMAGE_CREATED}" ]]
+          [[ "$(docker image inspect --format '{{index .Config.Labels "io.pacotinho.source.committed-at"}}' "${image}")" == "${SOURCE_COMMITTED_AT}" ]]
+          [[ "$(docker image inspect --format '{{index .Config.Labels "io.pacotinho.source.tree"}}' "${image}")" == "${TREE_SHA}" ]]
+          [[ "$(docker image inspect --format '{{index .Config.Labels "io.pacotinho.build.identity"}}' "${image}")" == "${BUILD_IDENTITY}" ]]
+          [[ "$(docker image inspect --format '{{if index .Config.Labels "io.pacotinho.build.run-id"}}present{{end}}' "${image}")" == '' ]]
+          docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${image}" \
+            | grep -Fxq "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
+          [[ "$(docker image inspect --format '{{json .Config.Healthcheck.Test}}' "${image}")" == *'http://127.0.0.1:3002/blog'* ]]
+
+          docker buildx imagetools inspect "${IMAGE_REPOSITORY}@${attestation_digest}" --raw \
+            >attestation-manifest.json
+          docker buildx imagetools inspect "${release_index}" --format '{{json .Provenance}}' \
+            >provenance.json
+          docker buildx imagetools inspect "${release_index}" --format '{{json .SBOM}}' \
+            >sbom.json
+
+          /usr/bin/python3 -I <<'PY'
+          import json
+          import os
+          import re
+
+          digest_pattern = re.compile(r"sha256:[0-9a-f]{64}")
+          expected_predicates = {
+              "https://slsa.dev/provenance/v1",
+              "https://spdx.dev/Document",
+          }
+          node_digest = os.environ["NODE_IMAGE"].rsplit("@sha256:", 1)[1]
+          node_digest_qualifier = f"digest=sha256:{node_digest}"
+
+          with open("attestation-manifest.json", encoding="utf-8") as handle:
+              attestation_manifest = json.load(handle)
+          layers = attestation_manifest.get("layers")
+          if attestation_manifest.get("schemaVersion") != 2 or not isinstance(layers, list):
+              raise SystemExit("invalid attestation manifest")
+          predicates = set()
+          for layer in layers:
+              if layer.get("mediaType") != "application/vnd.in-toto+json":
+                  raise SystemExit("invalid attestation media type")
+              digest = layer.get("digest", "")
+              size = layer.get("size")
+              if not digest_pattern.fullmatch(digest) or type(size) is not int or size < 1:
+                  raise SystemExit("invalid attestation layer")
+              predicate = layer.get("annotations", {}).get("in-toto.io/predicate-type", "")
+              if predicate in predicates:
+                  raise SystemExit("duplicate attestation predicate")
+              predicates.add(predicate)
+          if predicates != expected_predicates:
+              raise SystemExit("unexpected attestation predicates")
+
+          with open("provenance.json", encoding="utf-8") as handle:
+              provenance_document = json.load(handle)
+          with open("sbom.json", encoding="utf-8") as handle:
+              sbom_document = json.load(handle)
+          if set(provenance_document) != {"SLSA"}:
+              raise SystemExit("unexpected single-platform provenance projection")
+          if set(sbom_document) != {"SPDX"}:
+              raise SystemExit("unexpected single-platform SBOM projection")
+          slsa = provenance_document.get("SLSA")
+          spdx = sbom_document.get("SPDX")
+          if not isinstance(slsa, dict):
+              raise SystemExit("missing SLSA provenance predicate")
+          build_definition = slsa.get("buildDefinition", {})
+          if build_definition.get("buildType") != "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md":
+              raise SystemExit("invalid SLSA v1 build type")
+          internal_parameters = build_definition.get("internalParameters", {})
+          if not isinstance(internal_parameters.get("buildConfig"), dict):
+              raise SystemExit("SLSA provenance does not prove mode=max")
+          run_metadata = slsa.get("runDetails", {}).get("metadata", {})
+          completeness = run_metadata.get("buildkit_completeness", {})
+          if completeness.get("request") is not True:
+              raise SystemExit("incomplete SLSA build request")
+          if type(completeness.get("resolvedDependencies")) is not bool:
+              raise SystemExit("invalid SLSA dependency completeness")
+          materials = build_definition.get("resolvedDependencies")
+          if not isinstance(materials, list) or not any(
+              isinstance(material, dict)
+              and material.get("uri", "").startswith("pkg:docker/node")
+              and node_digest_qualifier in material.get("uri", "")
+              and "platform=linux%2Famd64" in material.get("uri", "")
+              and re.fullmatch(r"[0-9a-f]{64}", material.get("digest", {}).get("sha256", ""))
+              for material in materials
+          ):
+              raise SystemExit("pinned AMD64 Node base missing from SLSA resolved dependencies")
+          if not isinstance(spdx, dict) or spdx.get("SPDXID") != "SPDXRef-DOCUMENT":
+              raise SystemExit("invalid SPDX document")
+          if not str(spdx.get("spdxVersion", "")).startswith("SPDX-"):
+              raise SystemExit("invalid SPDX version")
+          if spdx.get("dataLicense") != "CC0-1.0":
+              raise SystemExit("invalid SPDX data license")
+          creators = spdx.get("creationInfo", {}).get("creators")
+          if not isinstance(creators, list) or not creators:
+              raise SystemExit("missing SPDX creators")
+          PY
+
+          expected_image_id=$(docker image inspect --format '{{.Id}}' "${image}")
+          docker run --rm --network none --entrypoint id "${image}" -u \
+            | grep -Eq '^[1-9][0-9]*$'
+          smoke_name="pacotinho-blog-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          smoke_container=$(docker run --detach \
+            --name "${smoke_name}" \
+            --network none \
+            --read-only \
+            --health-interval 2s \
+            --health-start-period 1s \
+            --health-timeout 5s \
+            --health-retries 3 \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777 \
+            --tmpfs /app/.next/cache:rw,noexec,nosuid,nodev,size=64m,mode=1777 \
+            "${image}")
+          [[ "$(docker container inspect --format '{{.Image}}' "${smoke_container}")" == "${expected_image_id}" ]]
+          docker exec "${smoke_container}" id -u | grep -Eq '^[1-9][0-9]*$'
+
+          smoke_healthy=false
+          smoke_deadline=$((SECONDS + 90))
+          while (( SECONDS < smoke_deadline )); do
+            health_status=$(docker container inspect \
+              --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+              "${smoke_container}")
+            endpoint_ok=false
+            if /usr/bin/timeout 5s docker exec "${smoke_container}" node -e \
+                "fetch('http://127.0.0.1:3002/blog').then(response=>process.exit(response.ok?0:1)).catch(()=>process.exit(1))"; then
+              endpoint_ok=true
+            fi
+            if [[ "${health_status}" == healthy && "${endpoint_ok}" == true ]]; then
+              smoke_healthy=true
+              break
+            fi
+            [[ "$(docker container inspect --format '{{.State.Running}}' "${smoke_container}")" == true ]] \
+              || break
+            sleep 1
+          done
+          if [[ "${smoke_healthy}" != true ]]; then
+            docker container inspect "${smoke_container}" >&2
+            docker logs "${smoke_container}" >&2
+            exit 1
+          fi
+          docker rm --force "${smoke_container}" >/dev/null
+          smoke_container=
+          [[ -z "$(docker ps --all --quiet --filter "name=^/${smoke_name}$")" ]]
+
+          export IMAGE_DIGEST=${image_digest}
+          export RELEASE_INDEX_DIGEST=${release_index_digest}
+          export ATTESTATION_MANIFEST_DIGEST=${attestation_digest}
+          export BUILDX_VERSION=${buildx_version}
+          export BUILDKIT_VERSION=${buildkit_version}
+          export DOCKER_VERSION=${docker_version}
+          PROVENANCE_SHA256="sha256:$(sha256sum provenance.json | cut -d' ' -f1)"
+          SBOM_SHA256="sha256:$(sha256sum sbom.json | cut -d' ' -f1)"
+          export PROVENANCE_SHA256 SBOM_SHA256
+          export BUILD_CONTEXT_SHA256=${build_context_sha256}
+          /usr/bin/python3 -I <<'PY'
+          import json
+          import os
+
+          source_sha = os.environ["SOURCE_SHA"]
+          image_digest = os.environ["IMAGE_DIGEST"]
+          repository = os.environ["IMAGE_REPOSITORY"]
+          manifest = {
+              "schema_version": 2,
+              "authoritative": False,
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "source": {
+                  "sha": source_sha,
+                  "tree": os.environ["TREE_SHA"],
+                  "committed_at": os.environ["SOURCE_COMMITTED_AT"],
+                  "source_date_epoch": int(os.environ["SOURCE_DATE_EPOCH"]),
+                  "trusted_main_sha": os.environ["TRUSTED_MAIN_SHA"],
+              },
+              "workflow": {
+                  "path": ".github/workflows/build-immutable.yml",
+                  "name": os.environ["GITHUB_WORKFLOW"],
+                  "ref": os.environ["GITHUB_WORKFLOW_REF"],
+                  "sha": os.environ["GITHUB_WORKFLOW_SHA"],
+                  "event": os.environ["GITHUB_EVENT_NAME"],
+                  "run_id": int(os.environ["GITHUB_RUN_ID"]),
+                  "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+                  "actor": os.environ["GITHUB_ACTOR"],
+                  "triggering_actor": os.environ["GITHUB_TRIGGERING_ACTOR"],
+                  "git_ref": os.environ["GITHUB_REF"],
+              },
+              "build": {
+                  "platform": "linux/amd64",
+                  "created": os.environ["IMAGE_CREATED"],
+                  "identity": os.environ["BUILD_IDENTITY"],
+                  "source_date_epoch": int(os.environ["SOURCE_DATE_EPOCH"]),
+                  "buildx_version": os.environ["BUILDX_VERSION"],
+                  "buildkit_image": os.environ["BUILDKIT_IMAGE"],
+                  "buildkit_version": os.environ["BUILDKIT_VERSION"],
+                  "dockerfile_frontend": os.environ["DOCKERFILE_FRONTEND"],
+                  "node_image": os.environ["NODE_IMAGE"],
+                  "docker_version": os.environ["DOCKER_VERSION"],
+                  "dockerfile_sha256": os.environ["DOCKERFILE_SHA256"],
+                  "pnpm_lock_sha256": os.environ["LOCKFILE_SHA256"],
+                  "context": {
+                      "kind": "git-archive",
+                      "storage": "sealed-linux-memfd",
+                      "kernel_seals": ["seal", "shrink", "grow", "write"],
+                      "commit": source_sha,
+                      "tree": os.environ["TREE_SHA"],
+                      "sha256": os.environ["BUILD_CONTEXT_SHA256"],
+                  },
+              },
+              "image": {
+                  "repository": repository,
+                  "tag": {
+                      "name": source_sha,
+                      "status": "pending",
+                      "authoritative": False,
+                      "atomic_create_if_absent": False,
+                  },
+                  "digest": image_digest,
+                  "reference": f"{repository}@{image_digest}",
+                  "platform": "linux/amd64",
+              },
+              "attestations": {
+                  "index_digest": os.environ["RELEASE_INDEX_DIGEST"],
+                  "index_reference": f"{repository}@{os.environ['RELEASE_INDEX_DIGEST']}",
+                  "manifest_digest": os.environ["ATTESTATION_MANIFEST_DIGEST"],
+                  "provenance": {
+                      "predicate_type": "https://slsa.dev/provenance/v1",
+                      "mode": "max",
+                      "sha256": os.environ["PROVENANCE_SHA256"],
+                  },
+                  "sbom": {
+                      "predicate_type": "https://spdx.dev/Document",
+                      "format": "SPDX",
+                      "generator": os.environ["SBOM_GENERATOR"],
+                      "sha256": os.environ["SBOM_SHA256"],
+                  },
+              },
+          }
+          with open("release-manifest.pending.json", "w", encoding="utf-8") as handle:
+              json.dump(manifest, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+          PY
+          {
+            printf 'BUILD_CONTEXT_SHA256=%s\n' "${build_context_sha256}"
+            printf 'IMAGE_DIGEST=%s\n' "${image_digest}"
+            printf 'RELEASE_INDEX_DIGEST=%s\n' "${release_index_digest}"
+            printf 'ATTESTATION_MANIFEST_DIGEST=%s\n' "${attestation_digest}"
+          } >>"${GITHUB_ENV}"
+
+      - name: Publish and verify exact source tag locator
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          docker_config=$(mktemp -d)
+          cleanup() {
+            status=$?
+            trap - EXIT
+            unset GHCR_TOKEN DOCKER_CONFIG
+            rm -rf -- "${docker_config}"
+            exit "${status}"
+          }
+          trap cleanup EXIT
+          export DOCKER_CONFIG=${docker_config}
+
+          readarray -t release_values < <(/usr/bin/python3 -I <<'PY'
+          import json
+          import os
+          import re
+
+          with open("release-manifest.pending.json", encoding="utf-8") as handle:
+              manifest = json.load(handle)
+          if manifest.get("schema_version") != 2:
+              raise SystemExit("invalid pending release manifest schema")
+          if manifest.get("authoritative") is not False:
+              raise SystemExit("pending release manifest must be non-authoritative")
+          if manifest.get("repository") != "c0h1b4/pacotinho-blog":
+              raise SystemExit("invalid pending release manifest repository")
+          source = manifest.get("source", {})
+          source_sha = source.get("sha", "")
+          workflow = manifest.get("workflow", {})
+          build = manifest.get("build", {})
+          build_context = build.get("context", {})
+          image = manifest.get("image", {})
+          tag = image.get("tag", {})
+          attestations = manifest.get("attestations", {})
+          digest = image.get("digest", "")
+          if source_sha != os.environ["SOURCE_SHA"] or not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+              raise SystemExit("invalid pending release manifest source")
+          if source.get("source_date_epoch") != int(os.environ["SOURCE_DATE_EPOCH"]):
+              raise SystemExit("invalid pending release source epoch")
+          if workflow.get("run_id") != int(os.environ["GITHUB_RUN_ID"]):
+              raise SystemExit("invalid pending release manifest run")
+          if workflow.get("run_attempt") != int(os.environ["GITHUB_RUN_ATTEMPT"]):
+              raise SystemExit("invalid pending release manifest attempt")
+          if build.get("identity") != os.environ["BUILD_IDENTITY"]:
+              raise SystemExit("invalid pending release build identity")
+          if build_context.get("kind") != "git-archive":
+              raise SystemExit("invalid pending release build context kind")
+          if build_context.get("storage") != "sealed-linux-memfd":
+              raise SystemExit("invalid pending release build context storage")
+          if build_context.get("kernel_seals") != ["seal", "shrink", "grow", "write"]:
+              raise SystemExit("invalid pending release build context seals")
+          if build_context.get("commit") != source_sha:
+              raise SystemExit("invalid pending release build context commit")
+          if build_context.get("tree") != os.environ["TREE_SHA"]:
+              raise SystemExit("invalid pending release build context tree")
+          if build_context.get("sha256") != os.environ["BUILD_CONTEXT_SHA256"]:
+              raise SystemExit("invalid pending release build context digest")
+          if image.get("repository") != os.environ["IMAGE_REPOSITORY"]:
+              raise SystemExit("invalid pending release image repository")
+          if tag != {
+              "name": source_sha,
+              "status": "pending",
+              "authoritative": False,
+              "atomic_create_if_absent": False,
+          }:
+              raise SystemExit("invalid pending release tag state")
+          if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+              raise SystemExit("invalid pending release image digest")
+          if digest != os.environ["IMAGE_DIGEST"]:
+              raise SystemExit("pending release digest does not match verified image")
+          if image.get("reference") != f"{os.environ['IMAGE_REPOSITORY']}@{digest}":
+              raise SystemExit("invalid digest-qualified image reference")
+          if attestations.get("index_digest") != os.environ["RELEASE_INDEX_DIGEST"]:
+              raise SystemExit("invalid pending release attestation index")
+          if attestations.get("manifest_digest") != os.environ["ATTESTATION_MANIFEST_DIGEST"]:
+              raise SystemExit("invalid pending release attestation manifest")
+          provenance = attestations.get("provenance", {})
+          if provenance.get("predicate_type") != "https://slsa.dev/provenance/v1" or provenance.get("mode") != "max":
+              raise SystemExit("invalid pending release provenance contract")
+          sbom = attestations.get("sbom", {})
+          if sbom.get("predicate_type") != "https://spdx.dev/Document" or sbom.get("format") != "SPDX":
+              raise SystemExit("invalid pending release SBOM contract")
+          if sbom.get("generator") != os.environ["SBOM_GENERATOR"]:
+              raise SystemExit("invalid pending release SBOM generator")
+          print(source_sha)
+          print(digest)
+          PY
+          )
+          [[ ${#release_values[@]} -eq 2 ]]
+          readonly source_tag="${IMAGE_REPOSITORY}:${release_values[0]}"
+          readonly image_digest=${release_values[1]}
+          readonly image="${IMAGE_REPOSITORY}@${image_digest}"
+
+          printf '%s\n' "${GHCR_TOKEN}" \
+            | docker login ghcr.io --username c0h1b4 --password-stdin >/dev/null
+          unset GHCR_TOKEN
+
+          candidate_digest=$(docker buildx imagetools inspect "${image}" \
+            --format '{{.Manifest.Digest}}')
+          [[ "${candidate_digest}" == "${image_digest}" ]]
+
+          inspect_output=${docker_config}/tag-inspect.out
+          inspect_error=${docker_config}/tag-inspect.err
+          tag_action=
+          if docker buildx imagetools inspect "${source_tag}" \
+              --format '{{.Manifest.Digest}}' \
+              >"${inspect_output}" 2>"${inspect_error}"; then
+            existing_digest=$(<"${inspect_output}")
+            if [[ "${existing_digest}" != "${image_digest}" ]]; then
+              printf 'immutable_tag_conflict=%s existing=%s candidate=%s\n' \
+                "${source_tag}" "${existing_digest}" "${image_digest}" >&2
+              exit 1
+            fi
+            tag_action=already-present
+          else
+            if ! LC_ALL=C grep -Eiq \
+                '(^|[^[:alnum:]_])manifest[ _-]unknown([^[:alnum:]_]|$)' \
+                "${inspect_error}" \
+                && ! LC_ALL=C grep -Fqx -- "ERROR: ${source_tag}: not found" "${inspect_error}"; then
+              cat "${inspect_error}" >&2
+              exit 1
+            fi
+
+            docker buildx imagetools create \
+              --prefer-index=false \
+              --tag "${source_tag}" \
+              "${image}" >/dev/null
+            tag_action=created
+          fi
+
+          verified_digest=$(docker buildx imagetools inspect "${source_tag}" \
+            --format '{{.Manifest.Digest}}')
+          if [[ "${verified_digest}" != "${image_digest}" ]]; then
+            printf 'immutable_tag_verification_failed=%s expected=%s actual=%s\n' \
+              "${source_tag}" "${image_digest}" "${verified_digest}" >&2
+            exit 1
+          fi
+
+          export TAG_ACTION=${tag_action}
+          export VERIFIED_TAG_DIGEST=${verified_digest}
+          /usr/bin/python3 -I <<'PY'
+          import json
+          import os
+
+          with open("release-manifest.pending.json", encoding="utf-8") as handle:
+              manifest = json.load(handle)
+          image = manifest["image"]
+          source_sha = manifest["source"]["sha"]
+          image["tag"] = {
+              "action": os.environ["TAG_ACTION"],
+              "name": source_sha,
+              "observed_digest": os.environ["VERIFIED_TAG_DIGEST"],
+              "reference": f"{image['repository']}:{source_sha}",
+              "status": "verified",
+              "authoritative": False,
+              "atomic_create_if_absent": False,
+          }
+          manifest["authoritative"] = True
+          with open("release-manifest.json", "w", encoding="utf-8") as handle:
+              json.dump(manifest, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+          PY
+          rm -f -- release-manifest.pending.json
+
+      - name: Upload authoritative release manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pacotinho-blog-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Clean persistent runner release files
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f -- \
+            build-metadata.json image-index.json attestation-manifest.json \
+            provenance.json sbom.json \
+            release-manifest.pending.json release-manifest.json

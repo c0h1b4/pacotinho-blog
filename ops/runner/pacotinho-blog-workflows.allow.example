@@ -1,0 +1,2 @@
+# Replace the zero SHA with the exact reviewed main GITHUB_WORKFLOW_SHA.
+.github/workflows/build-immutable.yml 0000000000000000000000000000000000000000
