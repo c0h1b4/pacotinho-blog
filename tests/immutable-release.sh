@@ -112,7 +112,7 @@ require_fixed "${validate_image_test}" '--no-cache'
   || fail 'the shared validation function must force both builds to bypass layer cache'
 require_fixed "${validate_image_test}" 'first_tag=${image_repository}:first'
 require_fixed "${validate_image_test}" 'replay_tag=${image_repository}:replay'
-require_fixed "${validate_image_test}" '[[ "${replay_image_id}" == "${first_image_id}" ]]'
+require_fixed "${validate_image_test}" '[[ "${replay_image_fingerprint}" == "${first_image_fingerprint}" ]]'
 require_fixed "${validate_image_test}" 'SOURCE_DATE_EPOCH=${VALIDATION_SOURCE_DATE_EPOCH}'
 require_fixed "${validate_image_test}" 'http://127.0.0.1:3002/blog'
 
