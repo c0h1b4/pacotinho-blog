@@ -1,0 +1,16 @@
+.git
+.github
+.next
+.source
+node_modules
+out
+coverage
+ops
+tests
+*.log
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.DS_Store
+README.md

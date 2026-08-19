@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly INSTALLED_PATH=/usr/local/sbin/pacotinho-blog-builder-job-started
+if [[ "${BASH_SOURCE[0]}" == "${INSTALLED_PATH}" ]]; then
+  readonly ALLOWLIST=/etc/github-blog-runner/pacotinho-blog-workflows.allow
+  readonly VERIFY_FILE_OWNERSHIP=true
+elif [[ "${PACOTINHO_BLOG_HOOK_TESTING:-}" == true ]]; then
+  readonly ALLOWLIST=${PACOTINHO_BLOG_RUNNER_ALLOWLIST:?test allowlist is required}
+  readonly VERIFY_FILE_OWNERSHIP=false
+else
+  printf 'trusted_blog_runner_job_rejected=hook_not_installed\n' >&2
+  exit 78
+fi
+
+readonly EXPECTED_REPOSITORY=c0h1b4/pacotinho-blog
+readonly EXPECTED_ACTOR=c0h1b4
+readonly EXPECTED_EVENT=workflow_dispatch
+readonly EXPECTED_REF=refs/heads/main
+readonly EXPECTED_WORKFLOW=.github/workflows/build-immutable.yml
+readonly ZERO_SHA=0000000000000000000000000000000000000000
+
+fail() {
+  printf 'trusted_blog_runner_job_rejected=%s\n' "$1" >&2
+  exit 78
+}
+
+[[ "${GITHUB_REPOSITORY:-}" == "${EXPECTED_REPOSITORY}" ]] || fail repository
+[[ "${GITHUB_ACTOR:-}" == "${EXPECTED_ACTOR}" ]] || fail actor
+[[ "${GITHUB_TRIGGERING_ACTOR:-}" == "${EXPECTED_ACTOR}" ]] || fail triggering_actor
+[[ "${GITHUB_EVENT_NAME:-}" == "${EXPECTED_EVENT}" ]] || fail event
+[[ "${GITHUB_REF:-}" == "${EXPECTED_REF}" ]] || fail ref
+[[ "${GITHUB_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] || fail run_id
+[[ "${GITHUB_RUN_ATTEMPT:-}" =~ ^[1-9][0-9]*$ ]] || fail run_attempt
+[[ "${GITHUB_WORKFLOW_SHA:-}" =~ ^[0-9a-f]{40}$ \
+  && "${GITHUB_WORKFLOW_SHA}" != "${ZERO_SHA}" ]] || fail workflow_sha
+[[ -r "${ALLOWLIST}" ]] || fail allowlist_unreadable
+
+if [[ "${VERIFY_FILE_OWNERSHIP}" == true ]]; then
+  [[ -f "${BASH_SOURCE[0]}" && ! -L "${BASH_SOURCE[0]}" ]] || fail hook_file
+  [[ -f "${ALLOWLIST}" && ! -L "${ALLOWLIST}" ]] || fail allowlist_file
+  [[ "$(stat -c '%U:%G' "${BASH_SOURCE[0]}")" == root:root ]] || fail hook_owner
+  [[ "$(stat -c '%U:%G' "${ALLOWLIST}")" == root:root ]] || fail allowlist_owner
+  [[ "$(stat -c '%a' "${BASH_SOURCE[0]}")" == 755 ]] || fail hook_permissions
+  [[ "$(stat -c '%a' "${ALLOWLIST}")" == 644 ]] || fail allowlist_permissions
+fi
+
+readonly expected_workflow_ref="${EXPECTED_REPOSITORY}/${EXPECTED_WORKFLOW}@${EXPECTED_REF}"
+[[ "${GITHUB_WORKFLOW_REF:-}" == "${expected_workflow_ref}" ]] || fail workflow_ref
+
+allowed_sha=
+entry_count=0
+while IFS= read -r line || [[ -n "${line}" ]]; do
+  [[ -z "${line}" || "${line}" == \#* ]] && continue
+  read -r path sha extra <<<"${line}"
+  [[ -n "${path:-}" && -n "${sha:-}" && -z "${extra:-}" ]] || fail allowlist_format
+  [[ "${path}" == "${EXPECTED_WORKFLOW}" ]] || fail allowlist_path
+  [[ "${sha}" =~ ^[0-9a-f]{40}$ && "${sha}" != "${ZERO_SHA}" ]] \
+    || fail allowlist_sha
+  [[ -z "${allowed_sha}" ]] || fail allowlist_duplicate
+  allowed_sha=${sha}
+  entry_count=$((entry_count + 1))
+done <"${ALLOWLIST}"
+
+[[ ${entry_count} -eq 1 && -n "${allowed_sha}" ]] || fail allowlist_incomplete
+[[ "${allowed_sha}" == "${GITHUB_WORKFLOW_SHA}" ]] || fail workflow_sha_mismatch
+
+printf 'trusted_blog_runner_job_accepted=true\n'

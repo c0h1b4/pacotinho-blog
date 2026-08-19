@@ -1,0 +1,82 @@
+name: Validate immutable release
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pacotinho-blog-validation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      BUILDKIT_IMAGE: moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+      VALIDATION_SOURCE_SHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      VALIDATION_TREE_SHA: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      VALIDATION_IMAGE_CREATED: '2026-08-18T00:00:00Z'
+      VALIDATION_SOURCE_COMMITTED_AT: '2026-08-18T00:00:00Z'
+      VALIDATION_SOURCE_DATE_EPOCH: '1787011200'
+      VALIDATION_BUILD_ID: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install pinned actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=${RUNNER_TEMP}/actionlint.tar.gz
+          install_dir=${RUNNER_TEMP}/actionlint
+          mkdir -m 0755 "${install_dir}"
+          /usr/bin/curl --disable \
+            --proto '=https' \
+            --proto-redir '=https' \
+            --tlsv1.2 \
+            --connect-timeout 10 \
+            --max-time 120 \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --max-redirs 5 \
+            --output "${archive}" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          printf '%s  %s\n' \
+            8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 \
+            "${archive}" \
+            | sha256sum --check --strict
+          tar --extract --gzip --file "${archive}" --directory "${install_dir}" actionlint
+          chmod 0755 "${install_dir}/actionlint"
+          printf '%s\n' "${install_dir}" >>"${GITHUB_PATH}"
+
+      - name: Validate GitHub Actions workflows
+        run: actionlint -color
+
+      - name: Run immutable release regression tests
+        run: bash tests/immutable-release.sh
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.13.0
+
+      - name: Install exact package manager and dependencies
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.11.0 --activate
+          pnpm install --frozen-lockfile
+
+      - name: Build application
+        run: pnpm build
+
+      - name: Build and verify independent native AMD64 images
+        shell: bash
+        run: bash tests/validate-image.sh

@@ -1,4 +1,5 @@
 import type { MetadataRoute } from "next";
+import { getBuildDate } from "@/lib/build-time";
 import { getBlogPostSummaries, SITE_URL } from "@/lib/source";
 
 export default function sitemap(): MetadataRoute.Sitemap {
@@ -14,7 +15,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
   return [
     {
       url: `${SITE_URL}/blog`,
-      lastModified: new Date(),
+      lastModified: getBuildDate(),
       changeFrequency: "daily",
       priority: 1.0,
     },

@@ -1,3 +1,4 @@
+import { getBuildDate } from "@/lib/build-time";
 import { getBlogPostSummaries, SITE_URL } from "@/lib/source";
 
 function escapeXml(s: string): string {
@@ -34,7 +35,7 @@ export function GET() {
     <description>Dicas, novidades e conteúdos sobre gestão de encomendas em condomínios.</description>
     <language>pt-BR</language>
     <atom:link href="${SITE_URL}/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
+    <lastBuildDate>${getBuildDate().toUTCString()}</lastBuildDate>
 ${items}
   </channel>
 </rss>`;

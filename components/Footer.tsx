@@ -1,7 +1,8 @@
 import Link from "next/link";
+import { getBuildDate } from "@/lib/build-time";
 
 export function Footer() {
-  const year = new Date().getFullYear();
+  const year = getBuildDate().getUTCFullYear();
 
   return (
     <footer className="border-t border-fd-border mt-auto">
