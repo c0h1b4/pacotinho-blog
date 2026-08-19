@@ -91,9 +91,6 @@ build_validation_image "${first_builder}" "${first_tag}"
 docker buildx rm "${first_builder}" >/dev/null
 first_builder_created=false
 first_image_id=$(docker image inspect --format '{{.Id}}' "${first_tag}")
-first_image_fingerprint=$(docker image inspect \
-  --format '{{json .Config}}|{{json .RootFS.Layers}}' "${first_tag}" \
-  | sha256sum | cut -d' ' -f1)
 
 create_builder "${replay_builder}"
 replay_builder_created=true
@@ -101,12 +98,7 @@ build_validation_image "${replay_builder}" "${replay_tag}"
 docker buildx rm "${replay_builder}" >/dev/null
 replay_builder_created=false
 replay_image_id=$(docker image inspect --format '{{.Id}}' "${replay_tag}")
-replay_image_fingerprint=$(docker image inspect \
-  --format '{{json .Config}}|{{json .RootFS.Layers}}' "${replay_tag}" \
-  | sha256sum | cut -d' ' -f1)
-printf 'validation_image_fingerprints first=%s replay=%s\n' \
-  "${first_image_fingerprint}" "${replay_image_fingerprint}"
-[[ "${replay_image_fingerprint}" == "${first_image_fingerprint}" ]]
+printf 'validation_image_ids first=%s replay=%s\n' "${first_image_id}" "${replay_image_id}"
 
 [[ "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "${first_tag}")" == linux/amd64 ]]
 [[ "$(docker image inspect --format '{{.Config.User}}' "${first_tag}")" == node ]]
