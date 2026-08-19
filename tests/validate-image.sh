@@ -98,6 +98,7 @@ build_validation_image "${replay_builder}" "${replay_tag}"
 docker buildx rm "${replay_builder}" >/dev/null
 replay_builder_created=false
 replay_image_id=$(docker image inspect --format '{{.Id}}' "${replay_tag}")
+printf 'validation_image_ids first=%s replay=%s\n' "${first_image_id}" "${replay_image_id}"
 [[ "${replay_image_id}" == "${first_image_id}" ]]
 
 [[ "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "${first_tag}")" == linux/amd64 ]]
